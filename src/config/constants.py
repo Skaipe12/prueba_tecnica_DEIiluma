@@ -2,6 +2,7 @@ from pathlib import Path
 
 ROOT_DIR: Path = Path(__file__).resolve().parents[2]
 DATA_DIR: Path = ROOT_DIR / "data"
+SQL_DIR: Path = ROOT_DIR / "sql"
 CSV_PATH: Path = DATA_DIR / "data_jobs.csv"
 LOG_FILE: Path = ROOT_DIR / "logs" / "pipeline.log"
 LOG_MAX_BYTES: int = 5_242_880
@@ -58,3 +59,23 @@ BOOL_COLUMNS: tuple[str, ...] = (
 
 
 DECIMAL_COLUMNS: tuple[str, ...] = ("salary_year_avg", "salary_hour_avg")
+RAW_COPY_TYPES: tuple[str, ...] = (
+    "text",
+    "text",
+    "text",
+    "text",
+    "text",
+    "bool",
+    "text",
+    "timestamp",
+    "bool",
+    "bool",
+    "text",
+    "text",
+    "numeric",
+    "numeric",
+    "text",
+    "text[]",
+    "jsonb",
+    "text",
+)

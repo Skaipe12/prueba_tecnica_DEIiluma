@@ -1,0 +1,1 @@
+TRUNCATE TABLE raw.job_postings RESTART IDENTITY;
