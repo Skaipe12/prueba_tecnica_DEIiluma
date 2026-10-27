@@ -12,11 +12,11 @@ class PipelineQueries:
         return (self.sql_dir / name).read_text(encoding="utf-8")
 
     def create_schema(self) -> str:
-        """Creates the raw and core schemas with all their tables, if they do not exist."""
+        """Creates the raw schema with its table, if they do not exist."""
         return self.read_sql("schema.sql")
 
     def drop_schemas(self) -> str:
-        """Drops the core and raw schemas with everything inside."""
+        """Drops the raw schema with everything inside."""
         return self.read_sql("drop_schemas.sql")
 
     def truncate_job_postings(self) -> str:

@@ -45,6 +45,6 @@ def test_the_project_sql_files_exist_and_are_not_empty() -> None:
     queries = PipelineQueries()
 
     assert "CREATE SCHEMA IF NOT EXISTS raw" in queries.create_schema()
-    assert "DROP SCHEMA IF EXISTS core" in queries.drop_schemas()
+    assert "DROP SCHEMA IF EXISTS raw" in queries.drop_schemas()
     assert "TRUNCATE TABLE raw.job_postings" in queries.truncate_job_postings()
     assert "COPY raw.job_postings" in queries.copy_job_postings()
