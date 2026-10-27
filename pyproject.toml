@@ -27,6 +27,7 @@ target-version = "py312"
 select = ["E", "F", "B", "UP", "SIM"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["raw/tests"]
+addopts = "--import-mode=importlib"
 pythonpath = ["."]
 markers = ["integration: needs a running PostgreSQL (deselect with -m 'not integration')"]
