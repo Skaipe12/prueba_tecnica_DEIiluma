@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+env_proyecto/
+
+# Secrets
+.env
+
+# Data (keep the folder)
+data/*
+!data/.gitkeep
+
+# Logs and tooling caches
+logs/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Namespace packages: STYLES.MD forbids __init__.py
+__init__.py
+
+# IDE
+.vscode/
+.idea/
+.ipynb_checkpoints/
