@@ -115,11 +115,7 @@ class DataFactory:
 
     @classmethod
     def to_typed(cls, chunk: pd.DataFrame) -> pd.DataFrame:
-        """Converts a raw chunk to typed columns without changing any value.
-
-        Values that cannot be converted become None and their column names are listed in
-        parse_errors; row_hash is computed from the original text values.
-        """
+        """Converts a raw chunk to typed columns without changing any value."""
         parsers = cls.column_parsers()
         errors = [[] for _ in range(len(chunk))]
         data = {}
@@ -130,4 +126,11 @@ class DataFactory:
         # row_hash uses the raw text, so it is computed from the chunk and not from data
         data["row_hash"] = [cls.compute_row_hash(row) for row in chunk.to_dict("records")]
         data["parse_errors"] = [",".join(columns) or None for columns in errors]
-        return pd.DataFrame(data, index=chunk.index, dtype=object)
+        dtypes = {
+            **dict.fromkeys(TEXT_COLUMNS, "string"),
+            **dict.fromkeys(BOOL_COLUMNS, "boolean"),
+            "job_posted_date": "datetime64[us]",
+            "row_hash": "string",
+            "parse_errors": "string",
+        }
+        return pd.DataFrame(data, index=chunk.index, dtype=object).astype(dtypes)

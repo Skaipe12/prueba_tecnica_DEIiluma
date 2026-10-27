@@ -11,7 +11,11 @@ MAX_REJECT_RATIO: float = 0.01
 CONNECT_TIMEOUT_S: int = 5
 CSV_ENCODING: str = "utf-8-sig"
 CSV_TIMESTAMP_FORMAT: str = "%Y-%m-%d %H:%M:%S"
+
+
 ROW_HASH_SEPARATOR: str = "\x1f"
+
+
 CSV_COLUMNS: tuple[str, ...] = (
     "job_title_short",
     "job_title",
@@ -31,6 +35,8 @@ CSV_COLUMNS: tuple[str, ...] = (
     "job_skills",
     "job_type_skills",
 )
+
+
 TEXT_COLUMNS: tuple[str, ...] = (
     "job_title_short",
     "job_title",
@@ -42,9 +48,13 @@ TEXT_COLUMNS: tuple[str, ...] = (
     "salary_rate",
     "company_name",
 )
+
+
 BOOL_COLUMNS: tuple[str, ...] = (
     "job_work_from_home",
     "job_no_degree_mention",
     "job_health_insurance",
 )
+
+
 DECIMAL_COLUMNS: tuple[str, ...] = ("salary_year_avg", "salary_hour_avg")

@@ -160,17 +160,29 @@ def test_to_typed_converts_every_column_type() -> None:
         ]
     )
 
-    typed = DataFactory.to_typed(chunk).iloc[0]
+    typed = DataFactory.to_typed(chunk)
+    row = typed.iloc[0]
 
-    assert typed["job_work_from_home"] is True
-    assert typed["job_no_degree_mention"] is False
-    assert typed["job_posted_date"] == datetime(2023, 1, 14, 13, 18, 7)
-    assert typed["salary_year_avg"] == Decimal("157500.0")
-    assert typed["salary_hour_avg"] is None
-    assert typed["job_skills"] == ["sql", "python"]
-    assert typed["job_type_skills"] == {"programming": ["sql", "python"]}
-    assert typed["job_location"] is None
-    assert typed["parse_errors"] is None
+    assert typed["job_title"].dtype == "string"
+    assert typed["job_work_from_home"].dtype == "boolean"
+    assert typed["job_posted_date"].dtype == "datetime64[us]"
+    assert row["job_work_from_home"]
+    assert not row["job_no_degree_mention"]
+    assert row["job_posted_date"] == pd.Timestamp(2023, 1, 14, 13, 18, 7)
+    assert row["salary_year_avg"] == Decimal("157500.0")
+    assert row["job_skills"] == ["sql", "python"]
+    assert row["job_type_skills"] == {"programming": ["sql", "python"]}
+
+
+def test_to_typed_turns_empty_values_into_nulls() -> None:
+    typed = DataFactory.to_typed(make_chunk([make_row(job_location="", job_work_from_home="")]))
+    row = typed.iloc[0]
+
+    assert pd.isna(row["job_location"])
+    assert pd.isna(row["job_work_from_home"])
+    assert pd.isna(row["salary_hour_avg"])
+    assert pd.isna(row["job_skills"])
+    assert pd.isna(row["parse_errors"])
 
 
 def test_to_typed_does_not_change_any_text_value() -> None:
@@ -206,10 +218,12 @@ def test_to_typed_flags_values_that_cannot_be_converted() -> None:
 
     typed = DataFactory.to_typed(chunk)
 
-    assert list(typed["parse_errors"]) == [None, "job_work_from_home,job_posted_date", "job_skills"]
-    assert typed.loc[1, "job_work_from_home"] is None
-    assert typed.loc[1, "job_posted_date"] is None
-    assert typed.loc[2, "job_skills"] is None
+    assert typed["parse_errors"].isna().tolist() == [True, False, False]
+    assert typed.loc[1, "parse_errors"] == "job_work_from_home,job_posted_date"
+    assert typed.loc[2, "parse_errors"] == "job_skills"
+    assert pd.isna(typed.loc[1, "job_work_from_home"])
+    assert pd.isna(typed.loc[1, "job_posted_date"])
+    assert pd.isna(typed.loc[2, "job_skills"])
 
 
 def test_to_typed_hashes_the_original_text_values() -> None:
