@@ -55,6 +55,7 @@ def test_iter_chunks_returns_python_values_for_arrays_json_and_numbers(
     assert chunk.loc[0, "job_skills"] == ["sql", "python"]
     assert chunk.loc[0, "job_type_skills"] == {"a": ["x"]}
     assert chunk.loc[0, "salary_year_avg"] == Decimal("100.5")
+    assert chunk.loc[0, "job_location"] is None
     assert "loaded_at" not in chunk.columns
 
 
