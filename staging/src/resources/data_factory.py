@@ -113,3 +113,117 @@ class DataFactory:
             },
             index=chunk.index,
         )
+
+    @staticmethod
+    def distinct_frame(values: pd.Series, column: str) -> pd.DataFrame:
+        """Returns a one-column frame with the distinct non-null values of a series."""
+        distinct = values.dropna().drop_duplicates().reset_index(drop=True)
+        return pd.DataFrame({column: distinct.astype("string")})
+
+    @staticmethod
+    def skill_pairs_frame(clean: pd.DataFrame) -> pd.DataFrame:
+        """Returns the distinct (skill_name, skill_type_name) pairs of a cleaned chunk."""
+        pairs = clean["skill_type_pairs"].explode().dropna().drop_duplicates()
+        return pd.DataFrame(
+            {
+                "skill_name": pairs.map(lambda pair: pair[0]),
+                "skill_type_name": pairs.map(lambda pair: pair[1]),
+            },
+            dtype="string",
+        ).reset_index(drop=True)
+
+    @classmethod
+    def catalog_frames(cls, clean: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        """Returns the values of the catalogs that do not depend on another table."""
+        pairs = cls.skill_pairs_frame(clean)
+        skills = pd.concat([clean["skills"].explode(), pairs["skill_name"]])
+        return {
+            "countries": cls.distinct_frame(clean["country_name"], "country_name"),
+            "locations": cls.distinct_frame(clean["job_location"], "location_name"),
+            "platforms": cls.distinct_frame(clean["platform_name"], "platform_name"),
+            "schedule_types": cls.distinct_frame(
+                clean["schedule_types"].explode(), "schedule_type_name"
+            ),
+            "job_categories": cls.distinct_frame(clean["job_title_short"], "job_category_name"),
+            "salary_rates": cls.distinct_frame(clean["salary_rate"], "salary_rate_name"),
+            "skills": cls.distinct_frame(skills, "skill_name"),
+            "skill_types": cls.distinct_frame(pairs["skill_type_name"], "skill_type_name"),
+        }
+
+    @staticmethod
+    def companies_frame(clean: pd.DataFrame) -> pd.DataFrame:
+        """Returns one row per company key, named with its most frequent spelling in the chunk."""
+        companies = clean[["company_name", "company_key"]].dropna()
+        names = companies.groupby("company_key")["company_name"].agg(lambda s: s.mode().iloc[0])
+        return pd.DataFrame(
+            {"company_name": names.to_numpy(), "company_name_key": names.index.to_numpy()},
+            dtype="string",
+        )
+
+    @staticmethod
+    def search_locations_frame(clean: pd.DataFrame, country_ids: dict[str, int]) -> pd.DataFrame:
+        """Returns one row per search location with the id of its country."""
+        locations = clean.dropna(subset=["search_location"]).drop_duplicates("search_location")
+        return pd.DataFrame(
+            {
+                "search_location_name": locations["search_location"].astype("string"),
+                "country_id": locations["country_name"].map(country_ids).astype("Int64"),
+            }
+        ).reset_index(drop=True)
+
+    @staticmethod
+    def skill_skill_types_frame(
+        pairs: pd.DataFrame, skill_ids: dict[str, int], skill_type_ids: dict[str, int]
+    ) -> pd.DataFrame:
+        """Returns the skill and skill type ids of each pair."""
+        return pd.DataFrame(
+            {
+                "skill_id": pairs["skill_name"].map(skill_ids).astype("Int64"),
+                "skill_type_id": pairs["skill_type_name"].map(skill_type_ids).astype("Int64"),
+            }
+        )
+
+    @staticmethod
+    def jobs_frame(clean: pd.DataFrame, ids: dict[str, dict[str, int]]) -> pd.DataFrame:
+        """Returns the rows of core.jobs, with the foreign keys looked up in the id maps."""
+
+        def foreign_key(column: str, table: str) -> pd.Series:
+            return clean[column].map(ids[table]).astype("Int64")
+
+        return pd.DataFrame(
+            {
+                "source_row_hash": clean["row_hash"].astype("string"),
+                "job_title": clean["job_title"].astype("string"),
+                "job_category_id": foreign_key("job_title_short", "job_categories"),
+                "company_id": foreign_key("company_key", "companies"),
+                "job_location_id": foreign_key("job_location", "locations"),
+                "search_location_id": foreign_key("search_location", "search_locations"),
+                "platform_id": foreign_key("platform_name", "platforms"),
+                "salary_rate_id": foreign_key("salary_rate", "salary_rates"),
+                "posted_at": clean["posted_at"].astype("datetime64[us]"),
+                "work_from_home": clean["work_from_home"].astype("boolean"),
+                "no_degree_mention": clean["no_degree_mention"].astype("boolean"),
+                "health_insurance": clean["health_insurance"].astype("boolean"),
+                "salary_year_avg": clean["salary_year_avg"].astype(object),
+                "salary_hour_avg": clean["salary_hour_avg"].astype(object),
+            }
+        ).reset_index(drop=True)
+
+    @staticmethod
+    def bridge_frame(
+        clean: pd.DataFrame,
+        column: str,
+        job_ids: dict[str, int],
+        ids: dict[str, int],
+        id_column: str,
+    ) -> pd.DataFrame:
+        """Returns the (job_id, id) rows of a bridge table from a list column of the chunk."""
+        exploded = clean.assign(job_id=clean["row_hash"].map(job_ids))[["job_id", column]]
+        exploded = exploded.explode(column).dropna()
+        frame = pd.DataFrame(
+            {
+                "job_id": exploded["job_id"].astype("Int64"),
+                id_column: exploded[column].map(ids).astype("Int64"),
+            }
+        )
+        return frame.drop_duplicates().reset_index(drop=True)

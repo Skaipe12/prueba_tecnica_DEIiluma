@@ -15,3 +15,18 @@ VIA_PREFIX: str = "via "
 COMPANY_KEY_TRAILING: str = " .,;"
 SCHEDULE_SPLIT_PATTERN: str = r",\s*and\s+|,\s*|\s+and\s+"
 SCHEDULE_ALIASES: dict[str, str] = {"Kontraktor": "Contractor"}
+
+# Id column and natural key column of each core table that other tables point to.
+CATALOG_KEYS: dict[str, tuple[str, str]] = {
+    "countries": ("country_id", "country_name"),
+    "locations": ("location_id", "location_name"),
+    "search_locations": ("search_location_id", "search_location_name"),
+    "companies": ("company_id", "company_name_key"),
+    "platforms": ("platform_id", "platform_name"),
+    "schedule_types": ("schedule_type_id", "schedule_type_name"),
+    "job_categories": ("job_category_id", "job_category_name"),
+    "salary_rates": ("salary_rate_id", "salary_rate_name"),
+    "skills": ("skill_id", "skill_name"),
+    "skill_types": ("skill_type_id", "skill_type_name"),
+    "jobs": ("job_id", "source_row_hash"),
+}

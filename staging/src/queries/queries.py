@@ -1,4 +1,4 @@
-from staging.src.config.constants import SQL_DIR
+from staging.src.config.constants import CATALOG_KEYS, SQL_DIR
 from collections.abc import Sequence
 from psycopg import sql
 
@@ -30,3 +30,17 @@ class PipelineQueries:
         return sql.SQL("COPY core.{} ({}) FROM STDIN").format(
             sql.Identifier(table), sql.SQL(", ").join(map(sql.Identifier, columns))
         )
+
+    def lookup_ids(self, table: str) -> sql.Composed:
+        """Reads the key and the id of the rows of a core table whose key is in a list."""
+        id_column, key_column = CATALOG_KEYS[table]
+        return sql.SQL("SELECT {}, {} FROM core.{} WHERE {} = ANY(%s)").format(
+            sql.Identifier(key_column),
+            sql.Identifier(id_column),
+            sql.Identifier(table),
+            sql.Identifier(key_column),
+        )
+
+    def select_skill_skill_types(self) -> str:
+        """Reads the skill and skill type ids of every row of core.skill_skill_types."""
+        return self.read_sql("core/select_skill_skill_types.sql")
