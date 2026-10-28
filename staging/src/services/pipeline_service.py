@@ -1,14 +1,14 @@
-from staging.src.resources.schema_manager import SchemaManager
 from staging.src.config.postgres_connection import PostgresConnection
+from staging.src.resources.schema_manager import SchemaManager
 from staging.src.resources.data_factory import DataFactory
 from staging.src.resources.key_resolver import KeyResolver
 from staging.src.resources.table_loader import TableLoader
-from staging.src.resources.validator import Validator
 from staging.src.resources.raw_reader import RawReader
+from staging.src.resources.validator import Validator
 from staging.src.config.constants import CATALOG_KEYS
 from staging.src.config.logger import get_logger
-import psycopg
 import pandas as pd
+import psycopg
 
 logger = get_logger(__name__)
 
