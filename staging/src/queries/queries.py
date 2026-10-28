@@ -1,4 +1,6 @@
 from staging.src.config.constants import SQL_DIR
+from collections.abc import Sequence
+from psycopg import sql
 
 
 class PipelineQueries:
@@ -22,3 +24,9 @@ class PipelineQueries:
     def select_job_postings(self) -> str:
         """Reads every row of raw.job_postings in the order they were loaded."""
         return self.read_sql("raw/select_job_postings.sql")
+
+    def copy_table(self, table: str, columns: Sequence[str]) -> sql.Composed:
+        """Copies rows from the client into the given columns of a core table."""
+        return sql.SQL("COPY core.{} ({}) FROM STDIN").format(
+            sql.Identifier(table), sql.SQL(", ").join(map(sql.Identifier, columns))
+        )
