@@ -37,22 +37,30 @@ class PipelineService:
 
     def run(self) -> None:
         """Reads raw in chunks and loads each chunk in its own transaction."""
-        read = loaded = 0
+        read = loaded = rejected = 0
         for number, chunk in enumerate(self._reader.iter_chunks(), start=1):
             with self._connection.connect() as connection:
-                new_jobs = self.load_chunk(connection, chunk)
+                new_jobs, chunk_rejected = self.load_chunk(connection, chunk)
             read += len(chunk)
             loaded += new_jobs
-            logger.info("chunk %d: %d rows read, %d new jobs", number, len(chunk), new_jobs)
-        logger.info("staging finished: %d rows read, %d new jobs", read, loaded)
+            rejected += chunk_rejected
+            logger.info(
+                "chunk %d: %d rows read, %d new jobs, %d rejected",
+                number, len(chunk), new_jobs, chunk_rejected,
+            )
+        logger.info(
+            "staging finished: %d rows read, %d new jobs, %d rejected", read, loaded, rejected
+        )
 
-    def load_chunk(self, connection: psycopg.Connection, chunk: pd.DataFrame) -> int:
-        """Loads the jobs of a chunk that are not in core yet and returns how many were new."""
-        clean = DataFactory.clean_chunk(chunk)
+    def load_chunk(self, connection: psycopg.Connection, chunk: pd.DataFrame) -> tuple[int, int]:
+        """Loads the new jobs of a chunk and returns how many were loaded and how many rejected."""
+        clean, rejected = Validator.split_valid_invalid(DataFactory.clean_chunk(chunk))
+        for reason, count in rejected["reason"].value_counts().items():
+            logger.warning("%d rows rejected: %s", count, reason)
         known_jobs = self._resolver.lookup(connection, "jobs", clean["row_hash"])
         clean = clean[~clean["row_hash"].isin(known_jobs)].drop_duplicates("row_hash")
         if clean.empty:
-            return 0
+            return 0, len(rejected)
 
         ids = {
             table: self.sync_catalog(connection, table, frame)
@@ -73,7 +81,7 @@ class PipelineService:
             clean, "schedule_types", job_ids, ids["schedule_types"], "schedule_type_id"
         )
         self.write(connection, "job_schedule_types", schedules)
-        return len(jobs)
+        return len(jobs), len(rejected)
 
     def sync_catalog(
         self, connection: psycopg.Connection, table: str, frame: pd.DataFrame

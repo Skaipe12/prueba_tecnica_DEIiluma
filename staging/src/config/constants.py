@@ -30,3 +30,15 @@ CATALOG_KEYS: dict[str, tuple[str, str]] = {
     "skill_types": ("skill_type_id", "skill_type_name"),
     "jobs": ("job_id", "source_row_hash"),
 }
+
+# Cleaned columns that core.jobs requires; a row without one of them is rejected.
+REQUIRED_JOB_COLUMNS: tuple[str, ...] = (
+    "job_title",
+    "job_title_short",
+    "posted_at",
+    "work_from_home",
+    "no_degree_mention",
+    "health_insurance",
+)
+REJECT_MISSING_VALUE: str = "missing_required_value"
+REJECT_RATE_WITHOUT_AMOUNT: str = "salary_rate_without_amount"

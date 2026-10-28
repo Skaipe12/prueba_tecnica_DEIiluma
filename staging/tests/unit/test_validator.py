@@ -32,3 +32,27 @@ def test_validate_table_rejects_duplicates_nulls_and_wrong_columns(table: str, d
 
 def test_there_is_one_schema_for_each_core_table() -> None:
     assert len(CORE_SCHEMAS) == 14
+
+
+def test_split_valid_invalid_rejects_missing_required_values_and_rate_without_amount() -> None:
+    clean = pd.DataFrame(
+        {
+            "job_title": ["ok", None, "no amount", "rate and amount"],
+            "job_title_short": ["a"] * 4,
+            "posted_at": [pd.Timestamp("2023-01-01")] * 4,
+            "work_from_home": [False] * 4,
+            "no_degree_mention": [False] * 4,
+            "health_insurance": [False] * 4,
+            "salary_rate": [None, None, "year", "year"],
+            "salary_year_avg": [None, None, None, 1],
+            "salary_hour_avg": [None] * 4,
+        }
+    )
+
+    valid, rejected = Validator.split_valid_invalid(clean)
+
+    assert list(valid["job_title"]) == ["ok", "rate and amount"]
+    assert dict(zip(rejected["job_title"].fillna("-"), rejected["reason"], strict=True)) == {
+        "-": "missing_required_value",
+        "no amount": "salary_rate_without_amount",
+    }

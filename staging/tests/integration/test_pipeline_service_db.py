@@ -40,14 +40,13 @@ CORE_TABLES = (
 
 
 def load_sample_into_raw(connection: PostgresConnection) -> None:
-    """Loads the sample CSV into raw, without the rows that have no job title."""
+    """Loads the sample CSV into raw."""
     RawSchemaManager(connection, RawQueries()).create_schema()
     loader = RawLoader(RawQueries())
     with connection.connect() as db:
         for chunk in CsvReader(SAMPLE_CSV).iter_chunks():
             valid, _ = RawValidator.split_valid_invalid(RawDataFactory.to_typed(chunk))
             loader.load(db, valid)
-        db.execute("DELETE FROM raw.job_postings WHERE job_title IS NULL")
 
 
 def make_service(connection: PostgresConnection) -> PipelineService:
@@ -80,10 +79,13 @@ def service(test_connection: PostgresConnection) -> PipelineService:
 def test_run_builds_the_core_tables_from_raw(
     service: PipelineService, test_connection: PostgresConnection
 ) -> None:
-    raw_distinct = test_connection.execute("SELECT count(DISTINCT row_hash) FROM raw.job_postings")
+    loadable = test_connection.execute(
+        "SELECT count(DISTINCT row_hash) FROM raw.job_postings WHERE job_title IS NOT NULL "
+        "AND NOT (salary_rate IS NOT NULL AND salary_year_avg IS NULL AND salary_hour_avg IS NULL)"
+    )
     counts = count_rows(test_connection)
 
-    assert counts["jobs"] == raw_distinct[0][0]
+    assert counts["jobs"] == loadable[0][0]
     schedules = test_connection.execute("SELECT schedule_type_name FROM core.schedule_types")
     assert {row[0] for row in schedules} == {"Full-time", "Part-time", "Contractor", "Internship"}
     # the spellings of the same company share one row
