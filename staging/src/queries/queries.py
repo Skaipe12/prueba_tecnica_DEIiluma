@@ -18,3 +18,7 @@ class PipelineQueries:
     def drop_schemas(self) -> str:
         """Drops the core schema with everything inside."""
         return self.read_sql("drop_schemas.sql")
+
+    def select_job_postings(self) -> str:
+        """Reads every row of raw.job_postings in the order they were loaded."""
+        return self.read_sql("raw/select_job_postings.sql")
