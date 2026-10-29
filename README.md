@@ -2,190 +2,156 @@
 
 [![CI](https://github.com/Skaipe12/prueba_tecnica_DEIiluma/actions/workflows/ci.yml/badge.svg)](https://github.com/Skaipe12/prueba_tecnica_DEIiluma/actions/workflows/ci.yml)
 
-ELT pipeline that loads ~786K job postings (`data_jobs.csv`) into PostgreSQL and models them in third normal form (3NF). Two layers: `raw` keeps the file as it comes, `staging` cleans it with pandas and builds the 3NF tables in `core`.
+ELT pipeline that loads ~786K job postings (`data_jobs.csv`) into PostgreSQL and models them in third normal form (3NF). Two layers: `raw` keeps the file as it comes, `staging` cleans it with pandas and builds the 3NF tables in the `core` schema.
 
-```
-data_jobs.csv
-   │  raw layer      CsvReader (10,000-row chunks) → DataFactory (types only) → Validator → RawLoader (COPY)
-   ▼
-raw.job_postings     faithful copy of the CSV, only typed (TEXT[] skills, JSONB skill types)
-   │  staging layer  RawReader → DataFactory (pandas cleaning) → Validator → TableLoader (COPY)
-   ▼
-core.*               3NF model: 14 tables with primary and foreign keys
-```
+Evidence of a full run (row counts, every table, the cleaning on real rows, idempotency and the running database) is in [docs/Full Run Evidence — Job Postings Pipeline.pdf](<docs/Full Run Evidence — Job Postings Pipeline.pdf>).
 
 ## Setup and run
 
-You need [uv](https://docs.astral.sh/uv/) (Python 3.12 is pinned) and Docker. Put `data_jobs.csv` in `data/` (not versioned).
+**Requirements:** [uv](https://docs.astral.sh/uv/) (Python 3.12 is pinned in `.python-version`), Docker, and the `data_jobs.csv` file.
 
 ```bash
-uv sync                          # creates .venv with runtime + dev dependencies
-cp .env.example .env             # replace every xxxx (host localhost; port 5432, or 5433 if 5432 is taken)
-docker compose up -d             # PostgreSQL 16; wait until `docker compose ps` shows "healthy"
-uv run python -m raw.src.main        # CSV -> raw.job_postings (full reload, one transaction)
-uv run python -m staging.src.main    # raw -> core (loads only what is new)
+# 1. Get the code and the environment
+git clone https://github.com/Skaipe12/prueba_tecnica_DEIiluma.git
+cd prueba_tecnica_DEIiluma
+uv sync                              # creates .venv with runtime + dev dependencies
+
+# 2. Configure the database credentials
+cp .env.example .env                 # replace every xxxx; host localhost, port 5432 (5433 if 5432 is taken like in my case)
+
+# 3. Start PostgreSQL and add the data
+docker compose up -d                 # PostgreSQL 16; wait until `docker compose ps` shows "healthy"
+# copy data_jobs.csv into data/
+
+# 4. Run the pipeline, in this order
+uv run python -m raw.src.main
+uv run python -m staging.src.main
 ```
 
-Run `raw` first. `staging` can be repeated at any time and adds only what `core` does not have. Logs go to the console and to `logs/`. `docker compose down -v` resets the database. `requirements*.txt` are exported from `uv.lock` (`uv export`).
+Both commands log to the console and to `logs/`. `staging` can be run again at any time: it only adds what `core` does not have yet. To check the result:
 
-## Project layout
-
-Each layer is self-contained (`src`, `sql`, `tests`) and they share one uv environment, so imports are prefixed (`from raw.src...`).
-
-```
-raw/       src/config (constants, .env, logging, psycopg 3 connection)   src/queries (the only class that reads .sql)
-           src/resources (CsvReader, DataFactory, Validator, SchemaManager, RawLoader)   src/services/pipeline_service.py
-staging/   same structure; resources: RawReader, DataFactory, Validator, KeyResolver, SchemaManager, TableLoader
+```sql
+SELECT count(*) FROM core.jobs;      -- 785237
 ```
 
-## Data model (3NF)
+`docker compose down -v` deletes the database for a full reset. `requirements*.txt` are exported from `uv.lock` for tools that need them.
+
+## Testing Guide
+
+```bash
+uv run pytest -m "not integration"   # 137 unit tests, no database needed (~7 s)
+uv run pytest -m integration         # 32 integration tests, need `docker compose up -d` (~13 s)
+uv run pytest                        # everything
+uv run ruff check .                  # lint
+```
+
+Unit tests cover the cleaning rules, the type conversions and the Pandera schemas, without a database. Each integration test creates its own throwaway database and drops it at the end, so it never touches the data you loaded. CI (GitHub Actions) runs the lint and the whole suite with a PostgreSQL service container.
+
+## Design Decisions
+
+### Architecture: ELT in two self-contained layers
+
+```mermaid
+flowchart TB
+    csv[("data_jobs.csv<br/>231 MB · 785,741 rows · 17 columns")]
+
+    subgraph RAW["raw layer · python -m raw.src.main · one transaction"]
+        direction TB
+        r1["CsvReader<br/>10,000-row chunks, everything as text"]
+        r2["DataFactory<br/>type conversion + row_hash<br/>no value is changed"]
+        r3["Validator<br/>rows with parse errors out · Pandera schema<br/>at most 1% rejected"]
+        r4["RawLoader<br/>TRUNCATE + COPY"]
+        r1 --> r2 --> r3 --> r4
+    end
+
+    rawt[("raw.job_postings<br/>faithful copy of the CSV, only typed<br/>TEXT[] skills · JSONB skill types")]
+
+    subgraph STG["staging layer · python -m staging.src.main · one transaction per chunk"]
+        direction TB
+        s1["RawReader<br/>server-side cursor, 10,000-row chunks"]
+        s2["DataFactory<br/>pandas cleaning rules"]
+        s3["Validator<br/>data quality rules"]
+        s4["KeyResolver<br/>looks up the keys already in core"]
+        s5["Validator + TableLoader<br/>Pandera schema per table, then COPY<br/>of the new rows only"]
+        s1 --> s2 --> s3 --> s4 --> s5
+    end
+
+    rej(["Rejected rows<br/>logged with their reason, the run goes on"])
+    rawfail(["Rollback of the whole load<br/>raw keeps its previous content"])
+    stgfail(["Rollback of the current chunk and the run stops<br/>chunks already committed stay in core"])
+    core[("core schema · 3NF<br/>10 catalogs · jobs · 3 bridge tables")]
+
+    csv --> r1
+    r4 --> rawt --> s1
+    r3 -. parse errors .-> rej
+    r3 -. schema error or more than 1% rejected .-> rawfail
+    s3 -. rejected by quality rules .-> rej
+    s5 -. schema error .-> stgfail
+    s5 --> core
+
+    classDef source fill:#fde68a,stroke:#b45309,color:#1f2937
+    classDef rawStyle fill:#bfdbfe,stroke:#1d4ed8,color:#1f2937
+    classDef stgStyle fill:#bbf7d0,stroke:#15803d,color:#1f2937
+    classDef store fill:#e9d5ff,stroke:#7e22ce,color:#1f2937
+    classDef reject fill:#fed7aa,stroke:#c2410c,color:#1f2937
+    classDef failure fill:#fecaca,stroke:#b91c1c,color:#1f2937
+    class csv source
+    class r1,r2,r3,r4 rawStyle
+    class s1,s2,s3,s4,s5 stgStyle
+    class rawt,core store
+    class rej reject
+    class rawfail,stgfail failure
+```
+
+- **ELT, with a faithful `raw`.** `raw` only converts types: empty text → `NULL`, booleans, timestamps, exact `NUMERIC` through `Decimal` (never `float`), skills → `TEXT[]`, skill types → `JSONB`. Encoding errors, spaces, case, repeated skills and the 101 duplicate rows stay as they are. This keeps the source auditable, and a cleaning rule can change and be re-applied without re-reading the 231 MB file.
+- **`raw` and `staging` are independent.** Each layer has its own `src`, `sql`, `tests` and entry point (`python -m raw.src.main`, `python -m staging.src.main`), like two jobs of an orchestrator, over one shared uv environment. A layer fails, retries or changes without touching the other.
+- **No transformation is written in SQL.** SQL is limited to DDL, `COPY`, `TRUNCATE` and reads, and lives in `.sql` files read by one class per layer. All cleaning is pandas, so it is testable with plain unit tests and the same logic could move to PySpark if the data grew.
+- **Layers by responsibility.** `config` (constants, `.env`, logging, connection), `queries` (the only SQL access), `resources` (single-purpose classes: reader, factory, validator, loader), `services` (the pipeline: order of steps, transactions, logs) and `main` (builds the objects and injects them). Dependencies are passed by constructor, which is what makes each piece testable.
+
+### Tools
+
+- **PostgreSQL 16** in Docker Compose: a relational model with real constraints, and `COPY` for fast loads. The schema is created by the code (`SchemaManager`), not by Docker, so it works the same locally and in CI.
+- **psycopg 3, no ORM.** The job is bulk loading, not object mapping. `cursor.copy()` streams each chunk to PostgreSQL much faster than row inserts, and `Jsonb` and array types map directly.
+- **pandas + Pandera.** pandas does the chunked transformations. Pandera declares the expected shape of every table (columns, order, types, nulls, uniqueness) in one line per column, so a bad frame fails before it is written. A test compares each schema with the real table.
+- **uv + GitHub Actions + pre-commit + ruff.** `uv.lock` pins the dependencies for the same environment locally and in CI; CI runs lint and the full suite (unit and integration) against a PostgreSQL service on every push. Credentials only come from `.env`.
+
+### The 3NF model
 
 ![Core model](docs/3FN-core-database.png)
 
-- **One-to-many:** each job points to one company, platform, location, search location, category and salary rate.
-- **Many-to-many:** `job_skills`, `job_schedule_types` and `skill_skill_types` are bridge tables with two foreign keys and a composite primary key, which also prevents duplicate pairs.
-- **No job id in the file,** so `jobs.source_row_hash` stores a SHA-256 of the 17 original values. It identifies a posting across layers and makes the load idempotent.
+`jobs` is the centre; ten catalogs and three bridge tables hang from it. Primary keys are surrogate `IDENTITY` ids, natural keys are `UNIQUE`, and every relation is a foreign key with an index.
 
-## Design decisions
+- **First normal form: `job_schedule_type` is atomic.** `"Full-time and Part-time"` is a list written as text. It is split into single values (`Full-time`, `Part-time`, `Contractor`, `Temp work`, `Internship`, `Volunteer`, `Per diem`, `Pekerjaan tetap`) and linked through `job_schedule_types`. This also removes false variants: 6 combinations appear in two orders in the file.
+- **Many-to-many with bridge tables.** A job has several skills and a skill is in many jobs (`job_skills`); a skill can belong to several types, as `mongodb` is both a database and a programming skill (`skill_skill_types`). Each bridge has a composite primary key, so a pair cannot repeat.
+- **Third normal form: the country hangs from `search_locations`, not from `jobs`.** Measured on the full file, the country depends on the search location (0 of 173 have more than one) but not on the job location (1,167 of 17,218 do). Storing it in `jobs` would be a transitive dependency.
+- **Companies have a key.** `company_name_key` (lowercase, no final punctuation) is the unique key and `company_name` keeps the most frequent spelling, so `PHILIPS` and `Philips` are one company.
+- **Types and constraints reflect the data.** Salaries are `NUMERIC(12,2)` and `NUMERIC(10,2)` with `CHECK >= 0`; `NOT NULL` where the model requires it. They act as a safety net behind the Pandera validation.
+- **The file has no job id,** so `jobs.source_row_hash` stores a SHA-256 of the 17 original values (`raw.row_hash` holds the same value). It identifies a posting across layers, collapses the exact duplicates (94 groups, 101 extra copies) and makes the load idempotent.
 
-- **Faithful `raw`.** It only converts types (empty → `NULL`, booleans, timestamps, exact `NUMERIC` via `Decimal`, `TEXT[]`, `JSONB`). Encoding errors, spaces, case, repeated skills and the 101 duplicate rows stay. A cleaning rule can change without re-reading the 231 MB file.
-- **No transformation in SQL.** SQL is only DDL, `COPY`, `TRUNCATE` and reads. Transformations are pandas, so the logic could move to PySpark.
-- **Country belongs to `search_locations`.** It depends on the search location (0 of 173 have more than one) but not on the job location (1,167 of 17,218 do); in `jobs` it would be a transitive dependency.
-- **`job_schedule_type` is atomic.** `"Full-time and Part-time"` is a list written as text (breaks 1NF), and 6 combinations appear in two orders.
-- **Bounded memory.** The CSV and `raw` are read in chunks of 10,000 rows (peak ~155–205 MB).
-- **Validation in every layer.** Pandera checks the shape of each table before writing (one schema per `core` table, compared in a test with the real table); `NOT NULL`/`CHECK` constraints stay as a safety net.
-- **`raw` is atomic:** more than 1% rejected rows, or any error, rolls back and keeps the previous content.
-- **`staging` is incremental and idempotent.** One transaction per chunk; the database assigns every id (`IDENTITY`). Per chunk it looks up existing keys, inserts only the new ones and reads back their ids for the foreign keys. A `row_hash` already in `core` is skipped. If a rule changes, drop `core`, recreate it and run `staging`.
+#### Questions I asked myself while building the model
 
-### What `staging` does to the data
+**How did I identify the entities?** The CSV is one wide table: every row is a posting that repeats everything around it, with the company, the platform and the place written out in full each time. I profiled the whole file first and then asked every column the same five questions. Is it something that exists on its own (a company, a platform, a skill)? Does it repeat across many postings? If it changes, should it change in one place only? Does it depend on the posting, or on another column? Is it a list packed into one cell? A "yes" to the first three gave a table of its own; a "yes" to the fourth moved the column next to what it depends on; a "yes" to the last one gave a bridge table.
 
-| Rule | Detail |
-|---|---|
-| Text | Trimmed, repeated whitespace collapsed, empty → `NULL` |
-| Mojibake | Repaired in `job_title` and `company_name` only if the whole text is UTF-8 read as LATIN1 (`MÃ©xico` → `México`; `SÃO PAULO` is left) |
-| Platform | Leading `via ` removed |
-| Company | Key = lowercase name without final punctuation; name = most frequent spelling |
-| Schedule type | Split into atomic values; the anomaly `Kontraktor` is translated to `Contractor` |
-| Skills | Lowercased, trimmed, repeats inside a posting removed |
-| Salaries | Rounded to 2 decimals, half up (the source has up to 15) |
+**What criterion decided that something deserved its own table?** Repetition measured on the real data, not intuition. About 140,000 company spellings are ~129,000 real companies, ~7,900 platforms repeat over 785K postings, 17,218 distinct job locations, 252 skills. What describes only that posting (title, date, remote, insurance, salaries) stays in `jobs`.
 
-**Data quality.** A row is rejected, logged with its reason and not loaded if it lacks a value that `core.jobs` requires (1 row has no title) or has a `salary_rate` without an amount (402 rows). Rejected rows stay in `raw`.
+**Where does the country belong?** My first instinct was next to the job location, so I tested it instead of assuming it: 1,167 of 17,218 job locations appear with more than one country, but 0 of the 173 search locations do. The country depends on the search that found the posting, so it hangs from `search_locations`. In `jobs` it would be the transitive dependency posting → search → country.
 
-**Result on the full file:** 785,741 rows in `raw`; 785,640 distinct (101 exact copies); 785,237 jobs in `core` (785,640 − 402 − 1). Rerunning `staging` loads 0 new jobs. `raw` takes ≈ 84 s; `staging` ≈ 8 min the first time and ≈ 45 s afterwards.
+**What do I do with a list inside a cell?** `job_skills` and `job_schedule_type` are lists written as text, which breaks first normal form. I turned each into a bridge table. For schedules I first thought about a catalog with the values as they come, but `"Full-time and Part-time"` and `"Part-time and Full-time"` would then be two different values for the same thing, so I split them into 8 atomic values.
 
-## Evidence from the full run
+**Can a skill have more than one type?** Yes: `mongodb` is both a database and a programming skill. A `type` column in `skills` could not hold it, so `skill_skill_types` is a many-to-many bridge with a composite key.
 
-Screenshots taken on the full file (785,741 rows in `raw`). Tables show their first 20 rows.
 
-### The database
+**Which identity is a company?** `Philips`, `PHILIPS` and `philips` are the same company. I group them by a normalized key (lowercase, no final punctuation) and keep the most frequent spelling as the name. I did not try to merge `BeBee` and `BeBee India` platforms or to detect companies that look like people: those would be guesses about the data, so I documented them as limitations.
 
-![PostgreSQL running in Docker](docs/docker_postgres_running.png)
+**How do I identify a posting if the file has no id?** I hash the 17 original values. The same hash lives in `raw` and `core`, so I can trace a row across layers and run the load twice without duplicating anything. The price is that two real openings with identical values count as one.
 
-The `db` service of `docker-compose.yml` running `postgres:16-alpine`, with host port 5433 mapped to the container's 5432. The `ERROR ... skills_skill_name_key` in the log is expected: it is the integration test that checks that a duplicate key makes `TableLoader` roll back.
+**Surrogate or natural keys?** Natural keys here are long, free text that could be corrected later, so every table has a surrogate `IDENTITY` primary key and the natural key stays `UNIQUE`. Foreign keys are small integers and a rename touches one row.
 
-### The result
 
-![Jobs in core](docs/raw_count.png)
+### The ETL method
 
-`core.jobs` has 785,237 rows: 785,640 distinct postings in `raw` minus 402 with a salary rate but no amount and 1 without a title.
-
-### The data cleaning, on the same posting
-
-The posting in `raw` and in `core` is joined by `row_hash = source_row_hash`, so each pair is the same row in both layers.
-
-![Mojibake repaired](docs/case_mojibake.png)
-
-`raw` keeps `CrÃ©dit` exactly as the file has it; `staging` repairs it to `Crédit` because the whole text is UTF-8 read as LATIN1.
-
-![Repeated spaces collapsed](docs/fix_data_spaces.png)
-
-The double space in `Scientist -  Time` is kept in `raw` and collapsed to one in `core`.
-
-### The tables of `core`
-
-![jobs](docs/jobs_table.png)
-
-`jobs` holds only the posting and foreign keys. `source_row_hash` is the 64-character SHA-256; ids are assigned by the database. Jobs 6, 8, 10 and 25 share `job_location_id` 6, the location `Anywhere` (below).
-
-![companies](docs/companies_table.png)
-
-`company_name_key` is the lowercase form used to group spellings; `company_name` keeps the most frequent one. Ids follow the alphabetical order of the key because each chunk is grouped by key before inserting.
-
-![locations](docs/locations_table.png)
-
-Job locations are stored as written in the file, so `Anywhere` and `Colorado Springs, CO (+3 others)` are valid values of the source.
-
-![search_locations](docs/search_locations_table.png)
-
-The country hangs from the search location, not from the job (see Design decisions). `Georgia` points to the United States because that is how the file labels it.
-
-![countries](docs/countries_table.png)
-
-160 countries, numbered in order of first appearance in `raw`.
-
-![platforms](docs/platforms_table.png)
-
-The `via ` prefix is gone. Variants such as `BeBee`, `BeBee México` and `BeBee Singapore` stay as separate platforms, because merging them would be a guess.
-
-![job_categories](docs/job_categories_table.png)
-
-The standardized title (`job_title_short`): only 10 values.
-
-![salary_rates](docs/salary_rates_table.png)
-
-Only `year` and `hour`. `month`, `week` and `day` appeared only in the 402 postings without an amount, which are rejected.
-
-![schedule_types](docs/schedule_types_table.png)
-
-Eight atomic values, never combinations. `Kontraktor` was translated to `Contractor` (id 2); `Pekerjaan tetap` is the other non-English value of the source and is kept.
-
-![job_schedule_types](docs/job_schedule_type_table.png)
-
-The bridge table that replaces `"Full-time and Part-time"`: job 6 has two rows (types 2 and 3) and job 13 has types 1 and 4.
-
-![skills](docs/skills_table.png)
-
-252 skills, lowercase and without repeats, numbered by first appearance.
-
-![skill_types](docs/skill_types_table.png)
-
-The 10 skill types of the file (`programming`, `analyst_tools`, `cloud`, `libraries`, `databases`...).
-
-![skill_skill_types](docs/skill_skill_types_table.png)
-
-Bridge between skills and their types, with a composite primary key.
-
-![job_skills](docs/job_skills_table.png)
-
-Bridge between jobs and skills. It starts at job 2 because job 1 has no skills (117K postings have none), and jobs 2, 3 and 4 share skill 2.
-
-### The many-to-many relation working
-
-![A job with its skills and types](docs/many-to-many-handle.png)
-
-Job 10 joined through the bridge tables. `mongodb` appears twice, once as a database and once as a programming skill, which a single type column could not hold.
-
-### Idempotency
-
-![Second run](docs/idempotencia.png)
-
-The second run of `staging` reads 785,741 rows and loads 0 new jobs. The 403 rejected rows are logged again with their reason (`missing_required_value` for the posting without a title) because they stay in `raw`.
-
-## Testing
-
-```bash
-uv run ruff check .                  # lint
-uv run pytest -m "not integration"   # unit tests, no database
-uv run pytest                        # everything; integration needs `docker compose up -d`
-```
-
-Tests live in each layer. Every integration test creates and drops its own database, so it never touches your data. CI runs lint and the whole suite with a PostgreSQL service container; its credentials belong to a throwaway database that lives only for the job.
-
-## Known limitations
-
-- Rows identical in all 17 columns count as one job: two real openings with the same values cannot be told apart from a scraper duplicate.
-- Platforms have ~7,900 variants (`BeBee`, `BeBee India`…) and are not merged; some company names look like people (possible recruiters). Titles cut with `...` (about 2%) cannot be recovered.
-- Mojibake is only repaired when safe: 14 titles and 13 companies keep `Ã`/`Â` because they are legitimate letters or truncated text.
-- `company_name` keeps the most frequent spelling of the chunk where the company first appears; later chunks do not rename it.
-- `JSONB` does not keep the key order of a dictionary. An empty and a missing value are both `NULL` in `raw`.
-- Not done: an OLAP / reporting model on top of `core`.
+- **Bounded memory.** The CSV and `raw` are read in chunks of 10,000 rows, so the file is never fully in memory (peak ~155–205 MB for 231 MB).
+- **`raw` is a transaction.** Truncate and load happen together: more than 1% of rejected rows, or any error, rolls back and keeps the previous content.
+- **`staging` is incremental and idempotent.** One transaction per chunk, and the database assigns every id. For each chunk it looks up which keys already exist, inserts only the new ones, reads back their ids to fill the foreign keys and bridge tables, and skips any posting whose `row_hash` is already in `core`. Running it twice changes nothing; if a cleaning rule changes, drop `core`, recreate it and run `staging`.
+- **Cleaning rules (one method each).** Text trimmed and repeated whitespace collapsed; mojibake repaired in `job_title` and `company_name` only when the whole text is UTF-8 read as LATIN1 (`MÃ©xico` → `México`, but `SÃO PAULO` is left); the `via ` prefix removed from platforms; skills lowercased and de-duplicated per posting; salaries rounded to 2 decimals; the anomaly `Kontraktor` translated to `Contractor`.
+- **Data quality.** A row is rejected, logged with its reason and not loaded if it lacks a value `core.jobs` requires (1 row has no title) or has a `salary_rate` without an amount (402 rows). Result: 785,741 rows in `raw`, 785,640 distinct, 785,237 jobs in `core`.
