@@ -51,57 +51,7 @@ Unit tests cover the cleaning rules, the type conversions and the Pandera schema
 
 ### Architecture: ELT in two self-contained layers
 
-```mermaid
-flowchart TB
-    csv[("data_jobs.csv<br/>231 MB · 785,741 rows · 17 columns")]
-
-    subgraph RAW["raw layer · python -m raw.src.main · one transaction"]
-        direction TB
-        r1["CsvReader<br/>10,000-row chunks, everything as text"]
-        r2["DataFactory<br/>type conversion + row_hash<br/>no value is changed"]
-        r3["Validator<br/>rows with parse errors out · Pandera schema<br/>at most 1% rejected"]
-        r4["RawLoader<br/>TRUNCATE + COPY"]
-        r1 --> r2 --> r3 --> r4
-    end
-
-    rawt[("raw.job_postings<br/>faithful copy of the CSV, only typed<br/>TEXT[] skills · JSONB skill types")]
-
-    subgraph STG["staging layer · python -m staging.src.main · one transaction per chunk"]
-        direction TB
-        s1["RawReader<br/>server-side cursor, 10,000-row chunks"]
-        s2["DataFactory<br/>pandas cleaning rules"]
-        s3["Validator<br/>data quality rules"]
-        s4["KeyResolver<br/>looks up the keys already in core"]
-        s5["Validator + TableLoader<br/>Pandera schema per table, then COPY<br/>of the new rows only"]
-        s1 --> s2 --> s3 --> s4 --> s5
-    end
-
-    rej(["Rejected rows<br/>logged with their reason, the run goes on"])
-    rawfail(["Rollback of the whole load<br/>raw keeps its previous content"])
-    stgfail(["Rollback of the current chunk and the run stops<br/>chunks already committed stay in core"])
-    core[("core schema · 3NF<br/>10 catalogs · jobs · 3 bridge tables")]
-
-    csv --> r1
-    r4 --> rawt --> s1
-    r3 -. parse errors .-> rej
-    r3 -. schema error or more than 1% rejected .-> rawfail
-    s3 -. rejected by quality rules .-> rej
-    s5 -. schema error .-> stgfail
-    s5 --> core
-
-    classDef source fill:#fde68a,stroke:#b45309,color:#1f2937
-    classDef rawStyle fill:#bfdbfe,stroke:#1d4ed8,color:#1f2937
-    classDef stgStyle fill:#bbf7d0,stroke:#15803d,color:#1f2937
-    classDef store fill:#e9d5ff,stroke:#7e22ce,color:#1f2937
-    classDef reject fill:#fed7aa,stroke:#c2410c,color:#1f2937
-    classDef failure fill:#fecaca,stroke:#b91c1c,color:#1f2937
-    class csv source
-    class r1,r2,r3,r4 rawStyle
-    class s1,s2,s3,s4,s5 stgStyle
-    class rawt,core store
-    class rej reject
-    class rawfail,stgfail failure
-```
+![Pipeline architecture](docs/pipeline_architecture.png)
 
 - **ELT, with a faithful `raw`.** `raw` only converts types: empty text → `NULL`, booleans, timestamps, exact `NUMERIC` through `Decimal` (never `float`), skills → `TEXT[]`, skill types → `JSONB`. Encoding errors, spaces, case, repeated skills and the 101 duplicate rows stay as they are. This keeps the source auditable, and a cleaning rule can change and be re-applied without re-reading the 231 MB file.
 - **`raw` and `staging` are independent.** Each layer has its own `src`, `sql`, `tests` and entry point (`python -m raw.src.main`, `python -m staging.src.main`), like two jobs of an orchestrator, over one shared uv environment. A layer fails, retries or changes without touching the other.
